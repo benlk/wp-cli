@@ -108,6 +108,48 @@ class Help_Command extends WP_CLI_Command {
 		return implode( "\n", $lines );
 	}
 
+	/**
+	 * Check if a given shell command exists on a POSIX system
+	 *
+	 * Based on https://stackoverflow.com/a/54185809 after reading several alternatives that involved string parsers
+	 *
+	 * This test method does not check for aliases.
+	 *
+	 * @param string $command The command to test whether it exists
+	 * @return bool|void void if running on Windows, true/false whether the command exists.
+	 */
+	private static function check_if_command_exists_on_posix( $command ) {
+		if ( Utils\is_windows() ) {
+			/*
+			 * This function excludes Windows
+			 * because cmd.exe and PowerShell have different methods to detect
+			 * if commands exist, but detecting if wp-cli is running in PowerShell
+			 * was beyond the scope of the fix proposed in TKTK
+			 *
+			 * Windows cmd.exe uses `where`
+			 * PowerShell uses `where.exe` or
+			 * @see https://superuser.com/a/440904
+			 */
+			return;
+		}
+
+		// POSIX method to detect if command exists.
+		// This does not check for aliases, like if someone has run `alias less=more`
+		$test_method = 'command -v';
+
+		$test_command = $test_method . ' ' . $command;
+
+		// proc_close returns the exit status, which is 0 (falsy) if successful
+		// so we invert it with !
+		return ! proc_close( Utils\proc_open_compat( $test_command ) );
+	}
+
+	/**
+	 * Pass a given set of output through the system's pager.
+	 *
+	 * @param string $out The output to be run through the pager.
+	 * @return mixed Termination status of the pager as reported by https://www.php.net/manual/en/function.proc-close.php
+	 */
 	private static function pass_through_pager( $out ) {
 
 		if ( ! Utils\check_proc_available( null /*context*/, true /*return*/ ) ) {
@@ -118,7 +160,15 @@ class Help_Command extends WP_CLI_Command {
 
 		$pager = getenv( 'PAGER' );
 		if ( false === $pager ) {
-			$pager = Utils\is_windows() ? 'more' : 'less -R';
+			if ( Utils\is_windows() ) {
+				$pager = 'more';
+			} elseif ( self::check_if_command_exists_on_posix( 'less' ) ) {
+				$pager = 'less -R';
+			} else {
+				// Though optional in the POSIX standard, `more` is assumed to exist on all systems, including Windows.
+				// @see https://en.wikipedia.org/wiki/List_of_POSIX_commands
+				$pager = 'more';
+			}
 		}
 
 		// For Windows 7 need to set code page to something other than Unicode (65001) to get around "Not enough memory." error with `more.com` on PHP 7.1+.
@@ -140,7 +190,7 @@ class Help_Command extends WP_CLI_Command {
 			2 => STDERR,
 		];
 
-		return proc_close( Utils\proc_open_compat( $pager, $descriptorspec, $pipes ) );
+		return proc_close( Utils\proc_open_compat( $pager, $descriptorspec ) );
 	}
 
 	private static function get_initial_markdown( $command ) {
